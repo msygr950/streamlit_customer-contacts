@@ -31,13 +31,15 @@ if "current_customer" not in st.session_state:
 # カスタマーデータの読み込み
 def load_customers():
     """顧客データをJSONファイルから読み込む"""
+    if not os.path.exists("customers.json"):
+        return {}
+    
     try:
-        if os.path.exists("customers.json"):
-            with open("customers.json", "r", encoding="utf-8") as f:
-                return json.load(f)
+        with open("customers.json", "r", encoding="utf-8") as f:
+            return json.load(f)
     except Exception as e:
         st.error(f"顧客データの読み込みエラー: {e}")
-    return {}
+        return {}
 
 # カスタマーデータの保存
 def save_customers(customers):
@@ -58,10 +60,11 @@ def generate_ai_response(messages):
             "content": "あなたは親切で知識豊富なカスタマーサポート担当者です。丁寧な日本語で対応してください。"
         }
         
-        # メッセージの整形
+        # メッセージの整形（最新20件のみを使用してコストと性能を最適化）
+        recent_messages = messages[-20:] if len(messages) > 20 else messages
         formatted_messages = [system_message] + [
             {"role": msg["role"], "content": msg["content"]}
-            for msg in messages
+            for msg in recent_messages
         ]
         
         response = client.chat.completions.create(
@@ -96,7 +99,11 @@ def main():
             
             if st.button("登録"):
                 if customer_name and customer_email:
-                    customer_id = f"C{len(st.session_state.customers) + 1:04d}"
+                    # 既存の最大IDを取得して次のIDを生成（削除による重複を防ぐ）
+                    existing_ids = [int(cid[1:]) for cid in st.session_state.customers.keys()]
+                    next_id = max(existing_ids, default=0) + 1
+                    customer_id = f"C{next_id:04d}"
+                    
                     st.session_state.customers[customer_id] = {
                         "name": customer_name,
                         "email": customer_email,
@@ -183,7 +190,7 @@ def main():
                     st.session_state.messages.append(assistant_message)
                     st.caption(assistant_message["timestamp"])
             
-            # 顧客の会話履歴に保存
+            # 顧客の会話履歴に保存（メモリ内のみ - 頻繁なディスク書き込みを避ける）
             if st.session_state.current_customer:
                 customer_id = st.session_state.current_customer
                 if "conversations" not in st.session_state.customers[customer_id]:
@@ -194,10 +201,22 @@ def main():
                     "user": prompt,
                     "assistant": response
                 })
-                save_customers(st.session_state.customers)
+                # バッチ保存のフラグを設定
+                if "needs_save" not in st.session_state:
+                    st.session_state.needs_save = False
+                st.session_state.needs_save = True
     
     with col2:
         st.header("操作")
+        
+        # 会話の保存
+        if st.button("会話を保存", use_container_width=True, type="primary"):
+            if st.session_state.get("needs_save", False):
+                save_customers(st.session_state.customers)
+                st.session_state.needs_save = False
+                st.success("保存しました")
+            else:
+                st.info("保存する変更はありません")
         
         # チャット履歴のクリア
         if st.button("チャット履歴をクリア", use_container_width=True):
@@ -226,6 +245,10 @@ def main():
         st.subheader("統計")
         st.metric("総メッセージ数", len(st.session_state.messages))
         st.metric("登録顧客数", len(st.session_state.customers))
+        
+        # 未保存の変更を通知
+        if st.session_state.get("needs_save", False):
+            st.warning("⚠️ 未保存の会話があります")
 
 if __name__ == "__main__":
     main()
